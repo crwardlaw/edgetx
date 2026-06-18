@@ -148,13 +148,13 @@ struct SpektrumSensor {
 // IMPORTANT: Keep the sensor table incremtally sorted by i2caddress
 const SpektrumSensor spektrumSensors[] = {
   // 0x01 High voltage internal sensor
-  SS(I2C_VOLTAGE,      0,  int16,     STR_DEF(STR_SENSOR_A1),                UNIT_VOLTS,     2), // 0.01V increments 
+  SS(I2C_VOLTAGE,      0,  int16,     STR_DEF(STR_SENSOR_A1),                UNIT_VOLTS,     2), // 0.01V increments
 
   // 0x02 Temperature internal sensor
   SS(I2C_TEMPERATURE,  0,  int16,     STR_DEF(STR_SENSOR_TEMP1),             UNIT_FAHRENHEIT, 1), // Temperature in degrees Fahrenheit
 
   // 0x03 High current internal sensor (0x03), Resolution: 300A / 2048 = 0.196791 A/count
-  SS(I2C_HIGH_CURRENT, 0,  int16,     STR_DEF(STR_SENSOR_CURR),              UNIT_AMPS,      1), // Range: +/- 150A 
+  SS(I2C_HIGH_CURRENT, 0,  int16,     STR_DEF(STR_SENSOR_CURR),              UNIT_AMPS,      1), // Range: +/- 150A
 
   // 0x0A Powerbox (also mentioned as 0x7D but that is also transmitter frame data)
   SS(I2C_PBOX,         0,  uint16,    STR_DEF(STR_SENSOR_BATT1_VOLTAGE),     UNIT_VOLTS,     2),  // Volts, 0.01v
@@ -189,13 +189,15 @@ const SpektrumSensor spektrumSensors[] = {
 //SS(I2C_GMETER,      12,  int16,     STR_DEF(STR_SENSOR_MIN_ACCZ ?),        UNIT_G,         2), // min G Z-axis        WING SPAR LOAD
 
   // 0x15,  JETCAT/TURBINE, BCD Encoded values
-  // TODO: Add decoding of status information
-//SS(I2C_JETCAT,       0,  uint8,     STR_DEF(STR_SENSOR_STATUS),            UNIT_BITFIELD,  0),
-  SS(I2C_JETCAT,       1,  uint8bcd,  STR_DEF(STR_SENSOR_THROTTLE),          UNIT_PERCENT,   0),
-  SS(I2C_JETCAT,       2,  uint16bcd, STR_DEF(STR_SENSOR_A1),                UNIT_VOLTS,     2),
-  SS(I2C_JETCAT,       4,  uint16bcd, STR_DEF(STR_SENSOR_A2),                UNIT_VOLTS,     2),
-  SS(I2C_JETCAT,       6,  uint32bcd, STR_DEF(STR_SENSOR_RPM),               UNIT_RPMS,      0),
-  SS(I2C_JETCAT,      10,  uint16bcd, STR_DEF(STR_SENSOR_TEMP1),             UNIT_CELSIUS,   0),
+  // NOTE: The ECU status are sent as TEMP4
+  SS(I2C_JETCAT,       0,  uint8,     STR_DEF(STR_SENSOR_TEMP4),             UNIT_RAW,       0), // Status
+  SS(I2C_JETCAT,       1,  uint8bcd,  STR_DEF(STR_SENSOR_THROTTLE),          UNIT_PERCENT,   0), // (BCD) xx Percent
+  SS(I2C_JETCAT,       2,  uint16bcd, STR_DEF(STR_SENSOR_A3),                UNIT_VOLTS,     2), // (BCD) xx.yy  packVoltage
+  SS(I2C_JETCAT,       4,  uint16bcd, STR_DEF(STR_SENSOR_A4),                UNIT_VOLTS,     2), // (BCD) xx.yy  pumpVoltage
+  SS(I2C_JETCAT,       6,  uint32bcd, STR_DEF(STR_SENSOR_RPM),               UNIT_RPMS,      0), // (BCD)
+  SS(I2C_JETCAT,      10,  uint16bcd, STR_DEF(STR_SENSOR_TEMP3),             UNIT_CELSIUS,   0), // (BCD) EGT Temperature, Celsius
+  SS(I2C_JETCAT,      12,  uint8,     STR_DEF(STR_SENSOR_TEMP4),             UNIT_RAW,       0), // offStatus
+
 
   // 0x16  GPS LOG
   SS(I2C_GPS_LOC,      0,  uint16bcd,  STR_DEF(STR_SENSOR_GPSALT),           UNIT_METERS,    1), // Atl-Low BCD 3.1
@@ -355,14 +357,16 @@ const SpektrumSensor spektrumSensors[] = {
   SS(I2C_PSEUDO_TX,    4,  uint32,    STR_DEF(STR_SENSOR_BIND),              UNIT_RAW,       0),
   SS(I2C_PSEUDO_TX,    8,  uint32,    STR_DEF(STR_SENSOR_FLIGHT_MODE),       UNIT_TEXT,      0),
   SS(I2C_PSEUDO_TX,    10, uint32,    STR_DEF(STR_SENSOR_CELLS),             UNIT_CELLS,     2),
-  SS(0,                0,  int16,     NULL,                         UNIT_RAW,       0) //sentinel
+  SS(0,                0,  int16,     NULL,                                  UNIT_RAW,       0) //sentinel
 };
 // clang-format on
 
 // Alt Low and High needs to be combined (in 2 diff packets)
 static uint8_t gpsAltHigh = 0;
-static bool varioTelemetry = false;
-static bool flightPackTelemetry = false;
+// TODO: Is this hiding the jetCatOffStatus further down?
+static uint8_t jetCatOffStatus = 0;
+static bool varioTelemetry = false;  // Receiving Vario Sensor Telemetry ?
+static bool flightPackTelemetry = false; // Receiving Flight Pack Telemetry ?
 
 // Helper function declared later
 static void processAS3XPacket(const uint8_t *packet);
@@ -387,7 +391,7 @@ static int32_t bcdToInt16(uint16_t bcd)
 
 static int32_t bcdToInt32(uint32_t bcd)
 {
-  return bcdToInt16(bcd >> 16) + 10000 * bcdToInt16(bcd);
+  return bcdToInt16(bcd >> 16) * 10000 + bcdToInt16(bcd);
 }
 
 // Spektrum uses Big Endian data types
@@ -553,6 +557,7 @@ void processSpektrumPacket(const uint8_t *packet)
 
   if (telemetryState == TELEMETRY_INIT) {  // Telemetry Reset?
     gpsAltHigh = 0;
+    jetCatOffStatus = 0;
     varioTelemetry = false;
     flightPackTelemetry = false;
   }
@@ -812,7 +817,20 @@ void processSpektrumPacket(const uint8_t *packet)
     else if (i2cAddress == I2C_ALTITUDE && varioTelemetry) {
       // Altitude already reported in vario
       continue; 
-    }
+    } // I2C_ALTITUDE
+
+    // TODO: Investigate this
+    else if (i2cAddress == I2C_JETCAT) {
+      if (sensor->startByte == 0) {   // STATUS
+          if (value == 0) { // Use the OFF_Status instead, but negative
+              value = (int8_t) -jetCatOffStatus;
+          }
+      }
+      else if (sensor->startByte == 12) {   // OFF_STATUS
+          jetCatOffStatus = value; // Save it to combine it with the Status
+          continue;
+      }
+    } // I2C_JETCAT
 
     setTelemetryValue(PROTOCOL_TELEMETRY_SPEKTRUM, pseudoId, 0, instance, value, sensor->unit, sensor->precision);
   } // FOR
@@ -858,7 +876,7 @@ void processDSMBindPacket(const uint8_t *packet)
   setTelemetryValue(PROTOCOL_TELEMETRY_SPEKTRUM, I2C_PSEUDO_TX_BIND, 0, 0,
                     debugval, UNIT_RAW, 0);
 }
-  
+
 
 const SpektrumSensor *getSpektrumSensor(uint16_t pseudoId)
 {
@@ -1040,7 +1058,7 @@ static char test34data[] = {0x34, 0x00, 0x2F, 0x00, 0x30, 0x09, 0x85, 0x01,
 // Example 0x3A:          0  1    2  3    4  5    6  7    8  9    10 11   12 13
 //                3A 00 | 01 9A | 01 9B | 01 9C | 01 9D | 7F FF | 7F FF | 0F AC 
 //                         4.10V   4.11V   4.12V   4.12v   --      --     40.1C
-static char test3Adata[] = {0x3A, 0x00, 0x9A, 0x01, 0x9B, 0x01, 0x9C, 0x01,  
+static char test3Adata[] = {0x3A, 0x00, 0x9A, 0x01, 0x9B, 0x01, 0x9C, 0x01,
                                         0x9D, 0x01,  0x7F, 0xFF, 0x7F, 0xFF,
                                         0x91, 0x01  };
 
@@ -1051,6 +1069,14 @@ static char test27data_16[] = {0x27, 0x16, 0x97, 0x00, 0x54, 0x71, 0x12, 0x28,
                             0x40, 0x80, 0x09, 0x11, 0x85, 0x14, 0x13, 0xBD}; // > 99 Flag
 static char test27data_17[] = {0x27, 0x17, 0x25, 0x00, 0x00,
                             0x28, 0x18, 0x21, 0x06, 0x00};
+
+// TODO: Investigate this
+// JetCat (BCD)
+// Example 0x15:          0    1    2  3   4  5    6  7  8  9    10 11   12
+//                15 00 | 00 | 51 | 50 05 |25 06 | 56 34 12 00 | 50 12 |  3
+//                Status:0, Power%: 51,  PackV = 05.50, PumpV=06.25, RPM = 00123456, EGT = 1250, OffStatus = 3
+static char test15data[] = {0x15, 0x00, 0x00, 0x51, 0x50, 0x05, 0x25, 0x06,
+                            0x56, 0x34, 0x12, 0x00, 0x50, 0x12, 0x03 };
 
 static uint8_t replaceForTestingPackage(const uint8_t *packet)
 {
@@ -1098,9 +1124,13 @@ static uint8_t replaceForTestingPackage(const uint8_t *packet)
     case 4: // Return LIPO monitor
         if (!real0x3A) memcpy((char *)packet + 2, test3Adata, 16);
         break;
+      // TODO: Investigate this
+    case 5: // JetCat
+        memcpy((char *)packet + 2, test15data, 15);
+        break;
   }
 
-  testStep = (testStep + 1) % 5;
+  testStep = (testStep + 1) % 6;
   
 
   return packet[2] & 0x7f;
