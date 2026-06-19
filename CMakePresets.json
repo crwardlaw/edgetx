@@ -17,11 +17,19 @@
     {
       "name": "companion",
       "displayName": "Companion",
+      "generator": "Ninja",
       "binaryDir": "build/companion",
       "toolchainFile": "cmake/toolchain/native.cmake",
+      "environment": {
+        "PATH": "${sourceDir}/../build-tools/.venv/Scripts;${sourceDir}/../build-tools;$penv{PATH}",
+        "VIRTUAL_ENV": "${sourceDir}/../build-tools/.venv"
+      },
       "cacheVariables": {
         "EdgeTX_SUPERBUILD": false,
-        "NATIVE_BUILD": true
+        "NATIVE_BUILD": true,
+        "Python3_EXECUTABLE": "${sourceDir}/../build-tools/.venv/Scripts/python.exe",
+        "CMAKE_PREFIX_PATH": "${sourceDir}/../build-tools/Qt/6.9.0/msvc2022_64",
+        "SDL2_DIR": "${sourceDir}/../build-tools/SDL2/cmake"
       },
       "warnings": {
         "dev": false
